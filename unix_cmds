@@ -1,0 +1,9 @@
+### 查看网络当前负载
+```
+nload
+```
+
+### 统计java代码行数
+```
+find . -name '*.java' | xargs -n1 wc -l | awk '{sum++$1}END{print sum}'
+```
