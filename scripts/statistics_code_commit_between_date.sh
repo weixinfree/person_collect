@@ -1,0 +1,1 @@
+git log --since=2017-10-20 --until=2017-11-10 --format='%aN' | sort -u | while read name; do git log --author="$name" --since=2017-10-20 --until=2017-11-10 --pretty=tformat: --numstat | awk '/^[0-9]/{ add += $1; subs += $2; loc += ($1 + $2) } END { printf "%-20s %-20s %-20s\t", add, subs, loc }' ; echo -en "$name\n"; done | sort -n
