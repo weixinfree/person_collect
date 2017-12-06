@@ -3,6 +3,7 @@
 2. Spock unit test, BDD
 3. Junit code analysis
 4. Python unittest 文档
+5. Mockito 源代码分析
 5. PLY 的源代码阅读
 6. Mockito 源代码和文档
 7. 操作系统
