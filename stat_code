@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+
+echo 'Java Code Lines: '
+find $1 -name '*.java' | grep -v build | xargs -n1 wc -l | awk '{sum += $1}END{print sum}'  
+
+echo 'Kotlin Code Lines: '
+find $1 -name '*.kt' | grep -v build | xargs -n1 wc -l | awk '{sum += $1}END{print sum}'  
+
+echo 'Python Code Lines: '
+find $1 -name '*.py' | grep -v build | xargs -n1 wc -l | awk '{sum += $1}END{print sum}'  
+
+echo 'Shell Code Lines: '
+find $1 -name '*.sh' | grep -v build | xargs -n1 wc -l | awk '{sum += $1}END{print sum}'  

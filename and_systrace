@@ -1,0 +1,2 @@
+#!/usr/bin/env bash
+python ~/Library/Android/sdk/platform-tools//systrace/systrace.py --app=com.xxx.xxx --time=10 -o my_new_systrace.html

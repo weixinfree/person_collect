@@ -1,0 +1,23 @@
+#!/usr/bin/env python3
+
+import os
+import shutil
+
+print('start clean downloads')
+
+downloads = '/Users/wangwei/Downloads'
+
+ext_files_map = [(os.path.join(downloads, os.path.splitext(file)[-1][1:]), os.path.join(downloads, file)) for file in
+                 os.listdir(downloads) if
+                 not os.path.isdir(file)]
+ext_files_map.sort()
+
+ext_files_map = [item for item in ext_files_map if item[0]]
+
+for dst_dir, file in ext_files_map:
+    if not os.path.exists(dst_dir):
+        os.mkdir(dst_dir)
+
+    shutil.move(file, os.path.join(dst_dir, os.path.split(file)[-1]))
+
+print('now downloads is clean!')

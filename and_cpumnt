@@ -1,0 +1,222 @@
+#!/usr/bin/env python3
+
+import re
+import subprocess
+import sys
+import time
+from concurrent.futures import ThreadPoolExecutor
+import traceback
+
+pid = -1
+interval_time = -1
+task_dic = {}
+
+pool = ThreadPoolExecutor(20)
+
+
+class TaskInfo:
+    def __init__(self):
+        self.tid = int()
+        self.name = str()
+        self.utime = int()
+        self.stime = int()
+        self.utime_increment = int()
+        self.stime_increment = int()
+        self.is_less_calculate = False
+        self.has_calculate_increment = False
+
+
+def load_pid(package_str):
+    global pid
+
+    cmd = "adb shell ps|grep -E \"\\s" + package_str + "$\""
+    popen_obj = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE)
+    out_str = popen_obj.stdout.read().decode('utf-8')
+
+    if popen_obj.returncode is not None:
+        print("Unexpected Error: \"" + cmd + "\" failure")
+        print("Output: " + out_str)
+        exit(1)
+
+    if out_str == "":
+        print("Error: Do not found the process has package name \"" +
+              package_str + "\"")
+        exit(1)
+    if len(out_str.split('\n')) != 2:
+        print("Error: Find multiple process has package name \"" + package_str + "\"")
+        print("\tPlease give a more specific package name")
+        exit(1)
+
+    out_str_attrs = out_str.split()
+    pid = int(out_str_attrs[1])
+
+
+def get_tid():
+    global pid
+
+    cmd = "adb shell ls /proc/" + str(pid) + "/task"
+    popen_obj = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE)
+    out_str = popen_obj.stdout.read().decode('utf-8')
+
+    if popen_obj.returncode is not None:
+        print("Unexpected Error: \"" + cmd + "\" failure")
+        print("Output: " + out_str)
+        exit(1)
+
+    return [int(tid) for tid in out_str.split("\n")[0:-1]]
+
+
+def process_main():
+    global pid, interval_time
+
+    argv_len = len(sys.argv)
+    if argv_len != 3:
+        print("Usage: %s <package name/keyword> <interval time (sec)>" %
+              sys.argv[0])
+        print("\t Example: %s mypackage 5" % sys.argv[0])
+        exit(1)
+
+    package_str = sys.argv[1]
+    interval_time = int(sys.argv[2])
+
+    if interval_time < 1:
+        print("Error: Interval time is too short")
+        exit(1)
+
+    load_pid(package_str)
+    tasks_id_before = get_tid()
+
+    process_info = get_processinfo()
+
+    # 发现由于程序及命令执行需要时间的原因, 计算占比时会有误差, 尽快在最小的时间间隔内取出所有数据, 再进行处理
+    task_info_list_temp = list(pool.map(get_taskinfo, tasks_id_before))
+
+    for task_info in task_info_list_temp:
+        # after we get the list of task Ids, maybe now some task has terminated.
+        if task_info is not None:
+            task_dic[task_info.tid] = task_info
+
+    print("End of first sampling at %s" % time.ctime(), flush=True)
+    time.sleep(interval_time)
+
+    task_info_list_temp.clear()
+
+    # The second sampling
+    process_info_after = get_processinfo()
+    process_info.utime_increment = process_info_after.utime - process_info.utime
+    process_info.stime_increment = process_info_after.stime - process_info.stime
+    process_info.has_calculate_increment = True
+
+    if process_info.utime_increment == 0:
+        print("Error: Interval time is too short, please increase interval time")
+        exit(1)
+
+    tasks_id_after = get_tid()
+
+    task_info_list_temp = list(pool.map(get_taskinfo, tasks_id_after))
+
+    print("End of second sampling at %s" % time.ctime(), flush=True)
+
+    for task_info in task_info_list_temp:
+        if task_info is not None:
+            if task_info.tid in task_dic:
+                task_dic[task_info.tid].utime_increment = task_info.utime - \
+                    task_dic[task_info.tid].utime
+                task_dic[task_info.tid].stime_increment = task_info.stime - \
+                    task_dic[task_info.tid].stime
+                task_dic[task_info.tid].has_calculate_increment = True
+            else:
+                task_info.utime_increment = task_info.utime
+                task_info.stime_increment = task_info.stime
+                task_info.has_calculate_increment = True
+                task_dic[task_info.tid] = task_info  # add new born task
+
+    for tid, task in task_dic.items():
+        if task.has_calculate_increment is False:
+            task_dic[tid].utime_increment = 0
+            task_dic[tid].stime_increment = 0
+            task_dic[tid].has_calculate_increment = True
+            task_dic[tid].is_less_calculate = True
+
+    result_list = list(task_dic.values())
+    result_list.sort(key=lambda t: -(t.utime_increment + t.stime_increment))
+
+    thread_count = len(result_list)
+    for i in range(50):
+        print("-", end=" ")
+    print()
+    print("PID: " + str(pid))
+    print("Thread Count: " + str(thread_count))
+    print('\033[7m', end="")
+    print("%-9s%-30s %-7s  %-7s   %-7s" % (
+        "TID", "NAME", "STIME", "UTIME", "TIME"
+    ))
+    print('\033[0m', end="")
+    for task in result_list:
+        utime_rate_percent = task.utime_increment / process_info.utime_increment * 100
+        stime_rate_percent = task.stime_increment / process_info.stime_increment * 100
+        total_rate_percent = (task.utime_increment + task.stime_increment) / (
+            process_info.utime_increment + process_info.stime_increment) * 100
+        print("%-9d%-30s% -7.3f%%  %-7.3f%%  %-7.3f%%" % (
+            task.tid, task.name, stime_rate_percent, utime_rate_percent, total_rate_percent),
+            end="")
+        if task.is_less_calculate is True:
+            print(" +", end="\t")
+        else:
+            print("  ", end="\t")
+
+        for i in range(round(total_rate_percent)):
+            print("|", end="")
+        print("")
+    pass
+
+
+def get_taskinfo(tid):
+    cmd = "adb shell cat /proc/" + str(pid) + "/task/" + str(tid) + "/stat"
+    popen_obj = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE)
+    popen_obj.wait()
+
+    if popen_obj.returncode is not 0:
+        return None
+    else:
+        try:
+            out_str = popen_obj.stdout.read().decode('utf-8')
+
+            attr_list = re.split(r"\s(?![^\(]*\))", out_str)
+            result = TaskInfo()
+            result.tid = tid
+            result.name = attr_list[1]
+            # 13, 14 are indexes of utime and stime
+            result.utime = int(attr_list[13])
+            result.stime = int(attr_list[14])
+            return result
+        except Exception:
+            pass
+
+
+def get_processinfo():
+    cmd = "adb shell cat /proc/" + str(pid) + "/stat"
+    popen_obj = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE)
+    popen_obj.wait()
+    if popen_obj.returncode is not 0:
+        print("Unexpected Error: Process(" + str(pid) + ") terminated")
+        exit(1)
+    else:
+        try:
+            out_str = popen_obj.stdout.read().decode('utf-8')
+
+            attr_list = re.split(r"\s(?![^\(]*\))", out_str)
+            result = TaskInfo()
+            result.tid = pid
+            result.name = attr_list[1]
+            # 13, 14 are indexes of utime and stime
+            result.utime = int(attr_list[13])
+            result.stime = int(attr_list[14])
+
+            return result
+        except Exception:
+            pass
+
+
+if __name__ == "__main__":
+    process_main()

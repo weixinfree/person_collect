@@ -1,0 +1,62 @@
+#!/usr/bin/env python3
+
+import os
+
+import numpy as np
+from PIL import Image
+
+
+class ImageOp:
+
+    def info(self, image: str):
+        im = Image.open(image)
+        print(im.size)
+        print(im.format)
+        print(im.filename)
+        print(im.info)
+        print(im.mode)
+
+    def crop(self, image: str, x1:int, y1:int, x2:int, y2:int, out: str = None):
+        out = out or 'crop_' + image
+        Image.open(image).crop((x1, y1, x2, y2)).save(out, dpi=(70, 70))
+
+    def scale(self, image: str, scale: float = 1, out: str = ''):
+        im = Image.open(image)
+        new_size = tuple(int(d * scale) for d in im.size)
+
+        name, ext = os.path.splitext(image)
+
+        out = out or f'{name}_s_{scale}{ext}'
+
+        print(f'raw size: {im.size}, after resize: {new_size}, save on: {out}')
+
+        im.resize(new_size, Image.ANTIALIAS).save(out)
+
+    def merge(self, *files, out: str = 'merged.png',  axis: str = 'x', sort: bool = False):
+
+        print(f'files will be merged on axis: {axis}, out as: {out}')
+
+        _axis = 1 if axis == 'x' else 0
+
+        files = sorted(files) if sort else files
+
+        print('files will be merged: ', files)
+
+        base_img = Image.open(files[0])
+        sz = base_img.size
+        base_mat = np.atleast_2d(base_img)
+        for file in files[1:]:
+
+            im = Image.open(file)
+            im = im.resize(sz, Image.ANTIALIAS)
+            mat = np.atleast_2d(im)
+            base_mat = np.append(base_mat, mat, axis=_axis)
+
+        final_img = Image.fromarray(base_mat)
+        final_img.save(out)
+
+
+if __name__ == '__main__':
+    import fire
+
+    fire.Fire(ImageOp)

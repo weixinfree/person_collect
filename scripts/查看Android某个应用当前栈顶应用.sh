@@ -1,1 +1,2 @@
-adb shell dumpsys gfxinfo com.meelive.ingkee | grep com.meelive.ingkee | tail -1 | awk -F / '{print $2}'
+package=$1
+adb shell dumpsys gfxinfo ${package} | grep ${package} | tail -1 | awk -F / '{print $2}'

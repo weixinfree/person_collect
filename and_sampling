@@ -1,0 +1,121 @@
+#!/usr/bin/env python3
+
+from collections import defaultdict
+from subprocess import check_output
+from time import time, sleep
+import re
+
+import fire
+import matplotlib.pyplot as plt
+import pandas
+
+
+def shell(cmd: str) -> str:
+    return check_output(cmd, shell=True).decode('utf-8')
+
+
+'''
+           Java Heap:    24172
+         Native Heap:   124316
+                Code:    61824
+               Stack:      184
+            Graphics:        0
+       Private Other:    12580
+              System:    18750
+'''
+
+mem_info_parser = {
+    'java_heap': "Java Heap:",
+    'native_heap': "Native Heap:",
+    'code': "Code:",
+    'stack': "Stack:",
+    'graphics': "Graphics:",
+    'private_other': "Private Other:",
+    'system': "System:"
+
+}
+
+
+class AndDevInfo:
+
+    def cpuinfo(self, iteration: int = 60, interval: int = 5,
+                app: str = 'com.xxx.xxx'):
+        def dump_cpuinfo():
+            return shell(f'adb shell dumpsys cpuinfo | grep {app} | head -1')
+
+        # drop first sampling
+        dump_cpuinfo()
+
+        cpu_cost = defaultdict(list)
+        for i in range(iteration):
+
+            cpu_info = dump_cpuinfo()
+            total, user, kernal = re.findall(r'(\d+)%', cpu_info)
+
+            print(i, cpu_info)
+
+            cpu_cost['total'].append(int(total))
+            cpu_cost['user'].append(int(user))
+            cpu_cost['kernal'].append(int(kernal))
+            cpu_cost['time'].append(i + 1)
+
+            sleep(interval)
+
+        pandas.DataFrame(cpu_cost).plot(x='time')
+        plt.show()
+
+    def gfxinfo(self, interval: int = 20, app: str = 'com.xxx.xxx'):
+        print(f'sampling gfxinfo in {interval}s')
+        shell(f'adb shell dumpsys gfxinfo {app} reset')
+        sleep(interval)
+        print(shell(f'adb shell dumpsys gfxinfo {app}'))
+
+    def meminfo(self, iteration: int = 100, app: str = 'com.xxx.xxx'):
+
+        mem_infos = defaultdict(list)
+
+        start = time()
+
+        def dump_meminfo():
+            return shell(f"adb shell dumpsys meminfo {app}")
+
+        # drop first dump data
+        dump_meminfo()
+
+        for i in range(iteration):
+
+            t_start = time()
+
+            info = dump_meminfo()
+            # java_heap = parse_java_heap(meminfo.splitlines())
+            # print(i, ', Java Heap:', java_heap)
+            # mem_infos['javaHeap'].append(java_heap)
+
+            print('-' * 10, i, '-' * 10)
+
+            for type, keyword in mem_info_parser.items():
+                mem_info = info.splitlines()
+                # pprint(mem_info)
+                # print(keyword)
+                value = [line for line in mem_info if keyword in line][0]
+
+                i_value = int(value.split()[-1].strip())
+                print(type, ':', i_value)
+                mem_infos[type].append(i_value)
+
+            mem_infos['time'].append(i + 1)
+
+            cost = time() - t_start
+            # avg 0.5s-0.7s
+            print(f'cost: {cost}s')
+
+        cost = time() - start
+        print(f'total cost: {cost}s')
+
+        pandas.DataFrame(mem_infos).plot(x='time')
+        plt.show()
+
+
+if __name__ == '__main__':
+
+    fire.Fire(AndDevInfo)

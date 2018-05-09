@@ -1,0 +1,399 @@
+#!/usr/bin/env python3
+"""
+fake module
+"""
+
+import operator
+import os
+import re
+from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
+from itertools import groupby
+from subprocess import check_call
+from typing import *
+
+BASE = 'src'
+
+
+class Res(NamedTuple):
+    res_type: str
+    res_name: str
+
+
+def pretty_print(*msg: str, l_decor: str = '>', r_decor: str = '<'):
+    print(f'\033[36m {l_decor * 10} {" ".join(msg)} {r_decor * 10} \033[0m')
+    print()
+
+
+def res_files(path: str) -> Sequence[str]:
+    for base, _, files in os.walk(path):
+        yield from (os.path.join(base, file) for file in files
+                    if (file.endswith('.xml')
+                        or file.endswith('.png')
+                        or file.endswith('.webp')
+                        or file.endswith('.jpg')
+                        or file.endswith('.aac')
+                        or file.endswith('.mp4'))
+                    and 'res' in base)
+
+
+def read_depends_modules(path: str) -> Set[str]:
+    depend_config = os.path.join(path, 'dependencies.txt')
+
+    if not os.path.exists(depend_config):
+        return set()
+
+    return {module_name(line.strip()) for line in open(depend_config, encoding='utf-8') if line.strip()}
+
+
+def module_name(m: str) -> str:
+    return m if m.startswith('p_') else f'p_{m}'
+
+
+def real_path(path):
+    return os.path.join(BASE, path)
+
+
+def _touch(path: str):
+    if not os.path.exists(path):
+        with open(path, encoding='utf-8', mode='w') as f:
+            f.write('')
+
+
+def git_add(path: str):
+    check_call(f'git add {path}', shell=True)
+
+
+def java_files(path: str) -> Sequence[str]:
+    result = []
+    for base, _, files in os.walk(path):
+        result.extend(os.path.join(base, file)
+                      for file in files if file.endswith('java'))
+
+    return result
+
+
+def get_package(file_content: str) -> str:
+    return re.search(r'package\s+([\w.]+);', file_content).group(1)
+
+
+def get_classes_from_file(file_content: str) -> List[str]:
+    package = get_package(file_content)
+    return [f'{package}.{item}' for item in re.findall(r'\bclass\s+(\w+)\b', file_content)]
+
+
+def read_file(file: str) -> str:
+    with open(file, encoding='utf-8') as f:
+        return f.read()
+
+
+def get_classes_from_module(path_module: Tuple[str, str]) -> Dict[str, str]:
+    path, module = path_module
+    return {c: module for file in java_files(path) for c in get_classes_from_file(read_file(file))}
+
+
+def build_class_module_map(path: str) -> Dict[str, str]:
+    modules = [(os.path.join(path, m), m)
+               for m in os.listdir(path) if m.startswith('p_')]
+
+    result = {}
+    pool = ThreadPoolExecutor(20)
+
+    for map in pool.map(get_classes_from_module, modules):
+        result.update(map)
+
+    return result
+
+
+def get_imports(file: str) -> Sequence[str]:
+    with open(file, encoding='utf-8') as f:
+        return re.findall(r'import\s+([\w.]+);', f.read())
+
+
+def find_own_resources(path: str) -> Set[Res]:
+    def get_res_type(file: str) -> str:
+        return file.split('/')[-2].split('-')[0].strip()
+
+    def get_res_name(file: str) -> str:
+        return os.path.split(file)[-1][:-4]
+
+    return {Res(get_res_type(file), get_res_name(file)) for file in res_files(path)}
+
+
+def locate_res_files() -> Dict[Res, Set[str]]:
+    def get_res_type(file: str) -> str:
+        return file.split('/')[-2].split('-')[0].strip()
+
+    def get_res_name(file: str) -> str:
+        return os.path.split(file)[-1][:-4]
+
+    result = defaultdict(set)
+
+    for file in res_files(BASE):
+        res = Res(get_res_type(file), get_res_name(file))
+        result[res].add(file)
+
+    return result
+
+
+def find_need_resources(path: str, exclude: str = '--------------') -> Set[Res]:
+    def files():
+        for base, _, files in os.walk(path):
+            yield from (os.path.join(base, file) for file in files if
+                        (file.endswith('java') or file.endswith('xml'))
+                        and not exclude in base.split('/'))
+
+    def find_res_from_code(file: str) -> Sequence[Res]:
+        with open(file, encoding='utf-8') as f:
+            for item in re.finditer(r'\bR\.(\w+)\.([\w_]*)\b', f.read()):
+                if item:
+                    yield Res(item[1], item[2])
+
+    def find_res_from_res(file: str) -> Sequence[Res]:
+        with open(file, encoding='utf-8') as f:
+            for item in re.finditer(r'@(\w+)/([\w_]*)\b', f.read()):
+                if item:
+                    yield Res(item[1], item[2])
+
+    result = []
+    for file in files():
+        result.extend(find_res_from_code(file))
+        result.extend(find_res_from_res(file))
+
+    return set(result)
+
+
+def mv_res(res: Res, res_locations: Set[str], dst_module: str):
+    for res_location in res_locations:
+        base, file = os.path.split(res_location)
+        _, real_res_type = os.path.split(base)
+
+        dst_dir = os.path.join(
+            real_path(module_name(dst_module)), 'res', real_res_type)
+
+        if not os.path.exists(dst_dir):
+            os.mkdir(dst_dir)
+
+        from subprocess import check_call
+
+        try:
+            check_call(f'git mv {res_location} {dst_dir}', shell=True)
+        except:
+            pass
+
+
+class FakeModule:
+    """
+    FakeModule: 渐进的向组件化+服务化重构
+    """
+
+    def who_rely_me(self, m: str):
+        """
+        别的模块依赖当前模块的情况
+        :param m:
+        :return:
+        """
+        print(self)
+
+        pretty_print('who rely me:', m)
+
+        r_module = module_name(m)
+
+        module_path = real_path(r_module)
+
+        # module 自身的 class
+        module_classes = set(get_classes_from_module(
+            (module_path, r_module)).keys())
+
+        modules = [module_name(m)
+                   for m in os.listdir(BASE) if m.startswith('p_')]
+
+        for checked_module in modules:
+            if checked_module == r_module:
+                continue
+
+            # 读取依赖
+            depend_modules = read_depends_modules(
+                real_path(module_name(checked_module)))
+
+            if r_module in depend_modules:
+                continue
+
+            # 检查非 depend 模块的 import
+            for file in java_files(real_path(checked_module)):
+                for j_import in get_imports(file):
+                    if j_import in module_classes:
+                        print(
+                            f'\033[35m WARN: {checked_module:>16}  {os.path.basename(file)[:-5]:<30}  ref: {r_module:>16}   {j_import} \033[0m')
+
+    def i_rely_who(self, m: str):
+        """
+        检查某个module 对 别的module的依赖
+        :param m:
+        :return:
+        """
+
+        print(self)
+
+        pretty_print('I rely who:', m)
+
+        # 整个源代码的类到module的映射
+        class_module_map = build_class_module_map(BASE)
+
+        module_path = real_path(module_name(m))
+
+        # 读取依赖
+        depend_modules = read_depends_modules(module_path)
+        depend_modules.add(module_name(m))
+
+        # 检查非 depend 模块的 import
+        for file in java_files(module_path):
+            for j_import in get_imports(file):
+                if j_import in class_module_map and class_module_map[j_import] not in depend_modules:
+                    print(
+                        f'\033[35m WARN: {module_name(m):>16}  {os.path.basename(file)[:-5]:<40} import from: {class_module_map[j_import]:>16}  {j_import} \033[0m')
+
+    def i(self, m: str = ''):
+        self.info(m)
+
+    def info(self, m: str = ''):
+        """
+        展示某个module的基本信息
+        :param m:
+        :return:
+        """
+
+        print(self)
+
+        pretty_print('info', m)
+
+        path = real_path(module_name(m))
+
+        def line_count(file: str) -> int:
+            with open(file, encoding='utf-8') as f:
+                return len(f.readlines())
+
+        files = list(java_files(path))
+
+        line_count = sum(line_count(file) for file in files)
+
+        pretty_print('source code:')
+        print(f'{"java files":>20}: {len(files):<20}')
+        print(f'{"source code/line":>20}: {line_count:<20}')
+
+        print()
+
+        pretty_print('dependencies')
+        for item in read_depends_modules(path):
+            print(' ' * 6, item)
+
+        # self.i_rely_who(m)
+        # print()
+
+        # self.who_rely_me(m)
+        # print()
+
+    def c(self, m: str):
+        self.create(m)
+
+    def create(self, m: str):
+        """
+        创建新的 Fake Module
+        :param m: module name
+        :return:
+        """
+
+        print(self)
+
+        pretty_print('create', m)
+
+        module_path = real_path(module_name(m))
+
+        if os.path.exists(module_path):
+            print(f'module: {m} already exists in path: {module_path}')
+            return
+
+        dirs = [
+            f'{module_path}/java/**/**/**',
+            f'{module_path}/res'
+        ]
+
+        files = [
+            f'{module_path}/dependencies.txt'
+        ]
+
+        for item in dirs:
+            if not os.path.exists(item):
+                os.makedirs(item, exist_ok=True)
+                git_add(item)
+
+        for item in files:
+            _touch(item)
+            git_add(item)
+
+        print(f'module: {m} create successfully')
+        print('please sync project!!!')
+
+    def reorganize_res(self):
+        """
+        重新按照各个module，移动各自的资源到各自的module
+        :return:
+        """
+
+        pretty_print('reorganize resources')
+
+        modules = [module_name(m)
+                   for m in os.listdir(BASE) if m.startswith('p_')]
+
+        for m in modules:
+            self.find_lost_res(m)
+
+    def find_lost_res(self, m: str, auto_mv: bool = True):
+        """
+        查找并自动移动 某个module 缺少的私有资源
+        :param m:
+        :param auto_mv:
+        :return:
+        """
+        print(self)
+        pretty_print('find and mv lost resource', m)
+
+        r_path = real_path(module_name(m))
+
+        # 引用到资源
+        ref_res = find_need_resources(r_path)
+        # 已经拥有的资源
+        own_res = find_own_resources(r_path)
+        # 其它module引用到的资源
+        other_module_ref_res = find_need_resources(BASE, module_name(m))
+
+        # 缺少的私有资源
+        lost_private_res = list(ref_res - own_res - other_module_ref_res)
+        lost_private_res.sort()
+
+        res_locations = locate_res_files() if auto_mv else dict()
+
+        for res_type, resources in groupby(lost_private_res, key=operator.itemgetter(0)):
+            if res_type == 'id':
+                continue
+
+            pretty_print(res_type)
+            for res in resources:
+
+                print(res.res_name)
+
+                if auto_mv and res_type in ('layout', 'drawable', 'anim', 'raw', 'xml') and res in res_locations:
+                    mv_res(res, res_locations[res], m)
+
+    def __repr__(self):
+        return ''
+
+
+if __name__ == '__main__':
+    try:
+        import fire
+    except:
+        print('please install python lib: fire >>> pip3 install fire')
+        raise SystemExit(-1)
+
+    fire.Fire(FakeModule)

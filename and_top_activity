@@ -1,0 +1,2 @@
+#!/usr/bin/env bash
+adb shell dumpsys gfxinfo com.xxx.xxx | grep ViewRootImpl@ | tail -1 | awk -F / '{print $2}'
